@@ -185,6 +185,10 @@ async function submitCredentials(ev: Event) {
   ev.preventDefault();
   const username = ($("username") as HTMLInputElement).value;
   const password = ($("password") as HTMLInputElement).value;
+  if (activeDef?.legacyCredentials) {
+    await submitLegacyCredentials(username, password);
+    return;
+  }
   log(`login({ username: "${username}", password: "***" })`, "section");
   try {
     const result = await login({ username, password });
@@ -193,6 +197,44 @@ async function submitCredentials(ev: Event) {
     if (result) showCreds(false);
   } catch (e) {
     log(`login(credentials) threw: ${(e as Error).message}`, "err");
+  }
+}
+
+/**
+ * Legacy credentials flow: atomic's `login()` only knows `security.webtoken`, so for `creds-legacy`
+ * we POST straight to the old `api/v1/webToken` endpoint — mirroring the external client that still
+ * uses it ({ action:"get", user, password, tokenInCookie:true } → { csrfToken }). The server sets the
+ * `sinequa-web-token` cookie, so we then prove the session works via `fetchPrincipal()`.
+ */
+async function submitLegacyCredentials(username: string, password: string) {
+  log(`legacy webToken POST { action:"get", user:"${username}", password:"***", tokenInCookie:true }`, "section");
+  const params = new URLSearchParams({
+    app: activeDef?.app ?? "creds-legacy",
+    noUserOverride: "true",
+    noAutoAuthentication: "true",
+  });
+  try {
+    const res = await realFetch(`/api/v1/webToken?${params}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ action: "get", user: username, password, tokenInCookie: true }),
+    });
+    log(`→ POST /api/v1/webToken · ${res.status}`, res.status >= 400 ? "err" : "net");
+    if (!res.ok) {
+      renderStatus(activeDef, `webToken → ${res.status}`);
+      return;
+    }
+    const { csrfToken } = (await res.json()) as { csrfToken: string };
+    log(`webToken → csrfToken=${csrfToken}`, "ok");
+    // Cookie session is now set — fetchPrincipal (noAutoAuthentication) should return 200.
+    const p = (await fetchPrincipal()) as { name: string };
+    log(`fetchPrincipal → 200 (name=${p.name}) — legacy cookie session works`, "ok");
+    showCreds(false);
+    renderStatus(activeDef, `csrfToken=${csrfToken}`);
+  } catch (e) {
+    log(`legacy webToken threw: ${(e as Error).message}`, "err");
+    renderStatus(activeDef, "threw (see log)");
   }
 }
 

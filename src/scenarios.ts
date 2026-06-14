@@ -8,6 +8,11 @@ export type ScenarioDef = {
   group: string;
   /** Show a username/password form and call login({username,password}). */
   credentials?: boolean;
+  /**
+   * Legacy credentials path: instead of atomic's `login()` (→ `security.webtoken`), submit the form
+   * straight to the old `api/v1/webToken` endpoint (`{ action:"get", user, password }` → `{ csrfToken }`).
+   */
+  legacyCredentials?: boolean;
   /** Set globalConfig.bearerToken before bootstrapping. */
   bearer?: boolean;
   /** After authenticating, run the header-driven user-override (impersonation) demo. */
@@ -23,6 +28,17 @@ export const SCENARIOS: ScenarioDef[] = [
     group: "Session",
     description: "No provider, no session → login form. Submit user/password → security.webtoken.",
     credentials: true,
+    expectedMode: "credentials",
+  },
+  {
+    app: "creds-legacy",
+    label: "Credentials (legacy webToken)",
+    icon: "🗝️",
+    group: "Session",
+    description:
+      "Legacy path: POST api/v1/webToken { action:'get', user, password, tokenInCookie } → { csrfToken }.",
+    credentials: true,
+    legacyCredentials: true,
     expectedMode: "credentials",
   },
   {

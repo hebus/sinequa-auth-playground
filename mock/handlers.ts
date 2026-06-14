@@ -42,6 +42,8 @@ export type Result = {
   setScenario?: string;
   setIdp?: string;
   clearIdp?: boolean;
+  /** Value of the `WWW-Authenticate` response header (e.g. `Bearer realm="sinequa"`). */
+  wwwAuthenticate?: string;
 };
 
 import {
@@ -61,6 +63,22 @@ function resolveScenario(req: ParsedReq): Scenario {
 
 function json(status: number, body: unknown): Result {
   return { status, json: body };
+}
+
+/**
+ * Scenarios whose unauthenticated `401`s should advertise a Bearer challenge. A real Sinequa
+ * server in credentials/bearer mode answers the auth probe with `WWW-Authenticate: Bearer …`,
+ * which the client reads (regex `^Bearer ?`) to detect the scheme before submitting the web token.
+ */
+const BEARER_CHALLENGE = 'Bearer realm="sinequa"';
+
+function bearerChallengeFor(scenario: Scenario): string | undefined {
+  return scenario === "creds" ||
+    scenario === "creds-legacy" ||
+    scenario === "bearer" ||
+    scenario === "oidc-expired"
+    ? BEARER_CHALLENGE
+    : undefined;
 }
 
 /** Handle `/api/v1/*`. Returns null for unknown endpoints. */
@@ -131,7 +149,8 @@ export function handleApi(req: ParsedReq): Result | null {
       return { status: 200, json: principal(), setSession: s.id, refreshToken: s.token };
     }
     // fetchPrincipal (noAutoAuthentication=true) without a session, or any non-OIDC probe.
-    return json(401, { errorMessage: "Not authenticated" });
+    // In credentials/bearer mode, advertise the Bearer challenge the client expects.
+    return { ...json(401, { errorMessage: "Not authenticated" }), wwwAuthenticate: bearerChallengeFor(scenario) };
   }
 
   // ---- Credentials / bearer web token -----------------------------------
@@ -149,7 +168,29 @@ export function handleApi(req: ParsedReq): Result | null {
         setScenario: scenario,
       };
     }
-    return json(401, { errorMessage: "Invalid credentials" });
+    return { ...json(401, { errorMessage: "Invalid credentials" }), wwwAuthenticate: BEARER_CHALLENGE };
+  }
+
+  // ---- Web token (action=get) -------------------------------------------
+  // Alternate credentials endpoint: POST api/v1/webToken { action:"get", user, password,
+  // tokenInCookie } → { csrfToken }. The client maps the response to `value.csrfToken`.
+  if (req.pathname === "/api/v1/webToken") {
+    const action = typeof req.body.action === "string" ? (req.body.action as string) : "";
+    const user = typeof req.body.user === "string" ? (req.body.user as string) : "";
+    const password = typeof req.body.password === "string" ? (req.body.password as string) : "";
+    const bearer = req.authHeader?.toLowerCase().startsWith("bearer ");
+    if (action === "get" && (bearer || (user && password))) {
+      const s = issueSession();
+      // tokenInCookie:true → also drop the session cookie (handled via setSession below).
+      return {
+        status: 200,
+        json: { csrfToken: s.token },
+        setSession: s.id,
+        refreshToken: s.token,
+        setScenario: scenario,
+      };
+    }
+    return { ...json(401, { errorMessage: "Invalid credentials" }), wwwAuthenticate: BEARER_CHALLENGE };
   }
 
   // ---- OAuth / SAML redirect --------------------------------------------

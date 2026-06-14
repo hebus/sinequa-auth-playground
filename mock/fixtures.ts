@@ -4,6 +4,7 @@
 
 export type Scenario =
   | "creds"
+  | "creds-legacy"
   | "sso"
   | "oauth"
   | "saml"
@@ -15,6 +16,7 @@ export type Scenario =
 
 export const SCENARIOS: Scenario[] = [
   "creds",
+  "creds-legacy",
   "sso",
   "oauth",
   "saml",

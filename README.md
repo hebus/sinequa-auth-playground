@@ -44,6 +44,7 @@ state. Pre-login pins it in a `mock-scenario` cookie for the param-less endpoint
 | Scenario | What it proves |
 |---|---|
 | **Credentials** | No provider, probe 401 → credentials form → `security.webtoken` authenticates. |
+| **Credentials (legacy webToken)** | Same UX, but the form posts to the **legacy** `api/v1/webToken` (`{ action:"get", user, password, tokenInCookie:true }` → `{ csrfToken }`) instead of `security.webtoken`. |
 | **SSO** | `getCsrfToken` returns a token immediately (proxy/browser SSO) → `sso`. |
 | **OAuth redirect** | Provider advertised → `security.oauth` → fake IdP sets a session → back → authenticated. |
 | **SAML redirect** | Same via `security.saml`. |
@@ -52,6 +53,25 @@ state. Pre-login pins it in a `mock-scenario` cookie for the param-less endpoint
 | **OIDC, no IdP session** | Probe returns **401** → deterministic fallback to the credentials form (no false positive). |
 | **OAuth loop guard** | Fake IdP returns **without** a session → the one-shot redirect loop guard throws instead of looping forever. |
 | **Impersonation (user override)** | Sign in as admin, then toggle `userOverride`: `fetchPrincipal` carries `sinequa-override-user`/`-domain` headers and the server answers as the impersonated user. Header-driven — **no re-login**. |
+
+### Legacy `webToken` (credentials)
+
+`api/v1/webToken` is the **old** credentials endpoint, kept for clients that predate
+`security.webtoken`. The call shape is:
+
+```http
+POST api/v1/webToken?noUserOverride=true&noAutoAuthentication=true
+{ "action": "get", "user": "...", "password": "...", "tokenInCookie": true }
+→ 200 { "csrfToken": "..." }   + Set-Cookie: sinequa-web-token=…
+```
+
+`@sinequa/atomic`'s `login()` does **not** use this path (it always posts to `security.webtoken`), so
+the **Credentials (legacy webToken)** scenario submits the form to `webToken` directly, then calls
+`fetchPrincipal()` to prove the resulting cookie session authenticates. Because the flow is
+out-of-band from atomic's token store, the **isAuthenticated** pill stays `false` — success is shown
+by the returned `csrfToken` and the `200` from `fetchPrincipal()` in the log. Bad/missing credentials
+return `401` with the same `WWW-Authenticate: Bearer realm="sinequa"` challenge as the other
+credential modes.
 
 ### Provider logout & the fake IdP (OAuth / SAML)
 
@@ -82,6 +102,7 @@ The mock implements only what the auth/bootstrap flow touches:
 | GET | `api/v1/challenge?action=getCsrfToken` | `getCsrfToken` (token if session/SSO, else `{}`) |
 | GET | `api/v1/challenge?action=deleteWebTokenCookie` | `logout` |
 | POST | `api/v1/security.webtoken` | credentials / bearer login |
+| POST | `api/v1/webToken` | **legacy** credentials login (`action=get` → `{ csrfToken }`) |
 | POST | `api/v1/security.oauth` / `.saml` | returns `redirectUrl` to the fake IdP |
 | GET | `api/v1/principal?action=get` | **probe** (auto-auth allowed) vs `fetchPrincipal` (`noAutoAuthentication=true`) |
 | GET | `api/v1/usersettings` | app init (stub) |

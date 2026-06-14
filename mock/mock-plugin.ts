@@ -54,6 +54,7 @@ function applyResult(res: ServerResponse, result: Result): void {
   }
   if (cookies.length) res.setHeader("Set-Cookie", cookies);
   if (result.refreshToken) res.setHeader("sinequa-jwt-refresh", result.refreshToken);
+  if (result.wwwAuthenticate) res.setHeader("WWW-Authenticate", result.wwwAuthenticate);
 
   if (result.redirectTo) {
     res.statusCode = result.status || 302;
