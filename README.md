@@ -152,6 +152,25 @@ the expiry/re-auth path. Atomic needs no change today; if one day you want a mor
 expiry, `handle-response.ts` (which already reads `sinequa-jwt-refresh`) could also read
 `WWW-Authenticate` — an optional enhancement, not a redesign of detection.
 
+### Is `WWW-Authenticate` useful per mode?
+
+The header only earns its keep where **the client holds a token it can refresh itself**. Where auth is
+*ambient* (proxy SSO) or via *IdP redirect* (OAuth/SAML/OIDC), the header's "go get a Bearer token"
+semantics don't match the actual remediation, so its only residual value is as an expiry flag.
+
+| Mode | Worth reading it? | Why |
+|---|---|---|
+| **bearer** (server-to-server) | ✅ **Most useful** | Canonical RFC 6750 use. The client owns the token; on expiry, `WWW-Authenticate: Bearer error="invalid_token"` is the standard "your token is stale, fetch a new one" signal. |
+| **credentials** | ✅ Useful | Legacy interop **plus** telling expiry (`error="invalid_token"`) apart from "never authenticated" → silent re-auth vs re-showing the form. |
+| **oauth / saml** | 🟡 Marginal | It can *signal* expiry, but the fix is a **redirect to the IdP**, whose metadata comes from `preLogin`/`security.oauth`, not the header — and a plain `401` already triggers re-`signIn()`. |
+| **oidc auto-auth** | 🟡 Marginal | Ambient IdP session; `401` → re-probe. The header only adds the expiry flag; the action stays config/probe. |
+| **sso** (proxy / browser) | ❌ Not useful / below the layer | `Negotiate`/`NTLM` challenges are consumed by the **browser/OS natively**, beneath atomic. The JS layer can't usefully act; re-negotiation is transparent. |
+
+**Bottom line.** If atomic ever reads `WWW-Authenticate`, the mode that truly justifies it is
+**`bearer`** (then `credentials`). For OAuth/SAML/SSO the effort doesn't pay off: config/probe
+detection plus the existing `401 → signIn()` already cover the need, and the header can't express the
+right remediation (proxy re-negotiation or IdP redirect).
+
 ## Files
 
 ```
