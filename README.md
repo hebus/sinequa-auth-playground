@@ -112,6 +112,46 @@ Response token plumbing matches atomic: success sets the `sinequa-web-token` coo
 
 Control endpoints: `GET /__mock/idp` (fake IdP), `POST /__mock/expire`, `GET /__mock/state`.
 
+## Auth-mode detection: config/probe vs `WWW-Authenticate`
+
+There are two ways a client can discover *how* to authenticate. They are **complementary, not
+interchangeable** — they solve different problems.
+
+- **A — config/probe (what `@sinequa/atomic` does today).** The client *deduces* the mode from
+  `app?preLogin` (providers advertised), `challenge?action=getCsrfToken` (token present?), and the
+  `principal` probe (`200` vs `401`).
+- **B — HTTP `WWW-Authenticate` challenge (RFC 7235).** The client hits a protected resource, the
+  server answers `401` + `WWW-Authenticate: <scheme> …`, and the client *reacts* to the advertised
+  scheme. This is what the **legacy** client in this playground expects (`/^Bearer ?/`), and why the
+  mock emits `WWW-Authenticate: Bearer realm="sinequa"` on credential/bearer `401`s.
+
+| Criterion | A — config/probe (atomic) | B — `WWW-Authenticate` |
+|---|---|---|
+| HTTP conformance | Sinequa-proprietary | Standard RFC 7235; interops with generic clients/proxies |
+| Bootstrap round-trips | 2–3 calls | 1 (a `401` on any protected resource) |
+| Mid-session expiry | Handled separately (401 interceptor → re-`signIn()`) | Natural: any `401` re-advertises the scheme |
+| Provider metadata | Rich: *which* OAuth/SAML provider, auto vs manual, redirect URL | Poor: `Bearer realm=…` can't say "redirect to this IdP" |
+| Non-Bearer modes (OAuth/SAML) | Modelled cleanly (provider redirect) | Badly expressed — a header can't model a browser redirect to an IdP |
+| Browser pitfall | None | ⚠️ `Basic`/`Negotiate` triggers the browser's **native** auth dialog (bad for an SPA); `Bearer` is safe |
+| Cross-origin (CORS) | n/a | Custom header needs `Access-Control-Expose-Headers` to be readable from JS |
+| Determinism / testability | High (explicit signals) | Depends on the server emitting the right header on the right endpoint |
+| Config ↔ server drift | Possible (local config vs server reality) | Server is the source of truth at request time |
+
+**Why atomic uses A.** Sinequa's modes don't reduce to standard HTTP schemes: OAuth/SAML need a
+*redirect to an IdP* with parameters (which provider, return URL) that `preLogin` carries natively but
+a `WWW-Authenticate` challenge cannot. And `Basic`/`Negotiate` challenges would pop the browser's
+native login dialog — unacceptable in a SPA. So **A is the right choice for initial multi-mode
+detection.**
+
+**Where B still wins.** Legacy/generic interop (this playground's legacy client *requires* the header)
+and a more standard "`401` → re-auth" path on token expiry.
+
+**Recommendation.** Don't replace A with B. Keep **A** for start-up mode detection (it carries the
+provider metadata B can't express) and treat **B** as a complementary signal for legacy interop and
+the expiry/re-auth path. Atomic needs no change today; if one day you want a more standard re-auth on
+expiry, `handle-response.ts` (which already reads `sinequa-jwt-refresh`) could also read
+`WWW-Authenticate` — an optional enhancement, not a redesign of detection.
+
 ## Files
 
 ```
