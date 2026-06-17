@@ -54,6 +54,7 @@ state. Pre-login pins it in a `mock-scenario` cookie for the param-less endpoint
 | **Credentials** | No provider, probe 401 → credentials form → `security.webtoken` authenticates. |
 | **Credentials (legacy webToken)** | Same UX, but the form posts to the **legacy** `api/v1/webToken` (`{ action:"get", user, password, tokenInCookie:true }` → `{ csrfToken }`) instead of `security.webtoken`. |
 | **SSO** | `getCsrfToken` returns a token immediately (proxy/browser SSO) → `sso`. |
+| **IIS + Windows SSO (IWA)** | Transparent Integrated Windows Auth (per a real HAR): no `401`/handshake on the wire, `Persistent-Auth: true` on every response, **no cookie, no token**. `getCsrfToken` returns no token; the `principal` auto-auth probe (`200`) → `authMode sso`. Token-less, so `isAuthenticated()` stays `false` on stock atomic. See [IIS + Windows SSO (IWA)](#iis--windows-sso-iwa). |
 | **OAuth redirect** | Provider advertised → `security.oauth` → fake IdP sets a session → back → authenticated. |
 | **SAML redirect** | Same via `security.saml`. |
 | **Bearer token** | `bearerToken` set → `security.webtoken` with `Authorization: Bearer` → authenticated. |
@@ -81,6 +82,45 @@ out-of-band from atomic's token store, the **isAuthenticated** pill stays `false
 by the returned `csrfToken` and the `200` from `fetchPrincipal()` in the log. Bad/missing credentials
 return `401` with the same `WWW-Authenticate: Bearer realm="sinequa"` challenge as the other
 credential modes.
+
+### IIS + Windows SSO (IWA)
+
+A very common on-prem deployment puts Sinequa behind **IIS with Integrated Windows Authentication**.
+This scenario is modelled on a **real capture** (`vanilla.pollux.sinequa.local.har`: Sinequa behind
+`Microsoft-IIS/10.0`), and the capture is unambiguous about how it actually behaves on the wire:
+
+- **No `401`, no `WWW-Authenticate`, no `Authorization`** anywhere — the Negotiate/Kerberos (SPNEGO)
+  handshake is done by the **browser + IIS below the HTTP layer the app sees**, using the signed-in
+  user's Windows credentials. There is no login form and no JavaScript involvement.
+- **`Persistent-Auth: true` on every response** (RFC 4559) — the *only* on-the-wire trace of the
+  Windows authentication, and the mock's marker for this scenario.
+- **No `Set-Cookie`, no CSRF token, no `sinequa-jwt-refresh`** — the identity is ambient on every
+  request (the authenticated connection), not a Sinequa web-token session.
+- `GET app?preLogin=true` → `200` (no provider).
+- `GET challenge?action=getCsrfToken&suppressErrors=true` → `200` **with no token** (real body:
+  `{"error":"web token cookie does not exist","methodresult":"ok"}`).
+- `GET principal?action=get` (no `noAutoAuthentication`) → `200` with the Windows identity (NT SID +
+  `domain\user`). This is atomic's `tryAutoAuthentication` probe succeeding.
+
+**`@sinequa/atomic` needs no IWA-specific code** — by design, since the handshake is below the JS layer.
+It just has to not get in the way, and it doesn't: `credentials:"include"` on every call
+(`web-api/helpers/methods/*`) lets the browser attach the Kerberos ticket; `getCsrfToken` returns no
+token but the `unknown`→`principal` auto-auth probe (`authentication/session/try-auto-authentication.ts`)
+returns `200`, so `login()` settles on `authMode: sso` (`authentication/session/login.ts`).
+
+> **⚠️ Token-less SSO gap.** Because the server returns no token, atomic's `isAuthenticated()` —
+> defined as `!!getToken()` (`authentication/session/user-authentication.ts`) — returns **`false`** even
+> though `login()` returned `true` and `authMode` is `sso`. So in this scenario the status panel shows
+> **login=true, mode=sso, but the `isAuthenticated` pill = false** — faithful to reality (atomic's own
+> `login.test.ts` "proxy SSO / cookie-only" test confirms `login()` true with a null token). This is a
+> genuine atomic limitation: in ambient SSO, `isAuthenticated()` is not a reliable signal. A proposed
+> fix (persist an authenticated state, so `isAuthenticated()` is `!!getToken() || isAuthedFlag()`) makes
+> the pill flip to `true`; run the playground with `ATOMIC=src` against a patched checkout to validate it.
+
+> **Playground note.** The real SPNEGO handshake (browser ↔ IIS, Intranet zone, OS ticket) cannot be
+> reproduced against a `localhost` mock — and it doesn't appear at the app layer anyway. So the scenario
+> reproduces the **observable contract** from the HAR (transparent, cookie-less, `Persistent-Auth: true`,
+> auth via the `principal` probe) rather than a fake Negotiate/NTLM message exchange.
 
 ### SharePoint Framework (SPFx) + `AadHttpClient`
 
@@ -157,6 +197,9 @@ Response token plumbing matches atomic: success sets the `sinequa-web-token` coo
 
 Control endpoints: `GET /__mock/idp` (fake IdP), `GET /__mock/aad-token` (fake Azure AD token endpoint
 for the SPFx scenario), `POST /__mock/expire`, `GET /__mock/state`.
+
+The **IIS + Windows SSO** scenario adds no control endpoint: it's plain `api/v1/*` responses plus a
+`Persistent-Auth: true` header (the IIS/Windows-auth marker) and a Windows-identity `principal`.
 
 ## Auth-mode detection: config/probe vs `WWW-Authenticate`
 

@@ -92,6 +92,8 @@ export function sinequaMock(): Plugin {
         if (origin) {
           res.setHeader("Access-Control-Allow-Origin", origin);
           res.setHeader("Access-Control-Allow-Credentials", "true");
+          // Expose the auth-signalling headers to cross-origin JS (incl. the IIS Windows-SSO marker).
+          res.setHeader("Access-Control-Expose-Headers", "sinequa-jwt-refresh, WWW-Authenticate, Persistent-Auth");
         }
         if (req.method === "OPTIONS") {
           res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -115,6 +117,13 @@ export function sinequaMock(): Plugin {
           overrideDomain: header(req, "sinequa-override-domain"),
           body: req.method === "POST" ? await readBody(req) : {},
         };
+
+        // IIS Integrated Windows Auth signs every response with `Persistent-Auth: true` (RFC 4559) —
+        // the only on-the-wire trace of the transparent Negotiate/Kerberos handshake. Mirror it for
+        // the iis-sso scenario (resolved from the `app` query param or the pinned scenario cookie).
+        if ((url.searchParams.get("app") || parsed.cookies[SCENARIO_COOKIE]) === "iis-sso") {
+          res.setHeader("Persistent-Auth", "true");
+        }
 
         const result =
           (url.pathname.startsWith("/__mock/") ? handleControl(parsed) : handleApi(parsed)) ?? null;

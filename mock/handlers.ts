@@ -9,6 +9,7 @@ import {
   principal,
   type Scenario,
   userSettings,
+  windowsPrincipal,
 } from "./fixtures";
 import {
   dropSession,
@@ -122,6 +123,12 @@ export function handleApi(req: ParsedReq): Result | null {
         const s = issueSession();
         return { status: 200, json: { csrfToken: s.token }, setSession: s.id, refreshToken: s.token };
       }
+      // IIS + Windows SSO: the user is authenticated by IIS (ambient Windows identity), but Sinequa
+      // mints NO web-token cookie and NO CSRF token. Faithful to the real HAR, getCsrfToken answers
+      // 200 with this body and no token — atomic then auto-authenticates via the principal probe.
+      if (scenario === "iis-sso") {
+        return json(200, { error: "web token cookie does not exist", methodresult: "ok" });
+      }
       // suppressErrors=true semantics: 200 with no token when unauthenticated.
       return json(200, {});
     }
@@ -141,6 +148,12 @@ export function handleApi(req: ParsedReq): Result | null {
 
   // ---- Principal --------------------------------------------------------
   if (req.pathname === "/api/v1/principal") {
+    // IIS + Windows SSO: the Windows identity is injected by IIS on EVERY request, so the principal
+    // resolves with no cookie/token — regardless of noAutoAuthentication. This 200 is what makes
+    // atomic's tryAutoAuthentication succeed and settle on authMode `sso` (without storing a token).
+    if (scenario === "iis-sso") {
+      return { status: 200, json: windowsPrincipal() };
+    }
     // Header-driven impersonation: when the admin sends sinequa-override-user, the server answers
     // as the impersonated user.
     const override = req.overrideUser

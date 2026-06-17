@@ -22,6 +22,11 @@ export type ScenarioDef = {
   spfx?: boolean;
   /** After authenticating, run the header-driven user-override (impersonation) demo. */
   impersonate?: boolean;
+  /**
+   * IIS Integrated Windows Authentication: the handshake is transparent (browser ↔ IIS); after
+   * bootstrapping, log the three auth signals to surface that it's a token-less ambient SSO.
+   */
+  iisSso?: boolean;
   expectedMode: string;
 };
 
@@ -52,6 +57,16 @@ export const SCENARIOS: ScenarioDef[] = [
     icon: "🪟",
     group: "Session",
     description: "getCsrfToken returns a token immediately → authenticated as sso.",
+    expectedMode: "sso",
+  },
+  {
+    app: "iis-sso",
+    label: "IIS + Windows SSO (IWA)",
+    icon: "🏢",
+    group: "Session",
+    description:
+      "Transparent IIS Windows auth (Persistent-Auth: true, no cookie/token). getCsrfToken returns no token; the principal auto-auth probe (200) → authMode sso. NB: token-less, so isAuthenticated() stays false on stock atomic.",
+    iisSso: true,
     expectedMode: "sso",
   },
   {

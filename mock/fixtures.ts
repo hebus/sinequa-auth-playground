@@ -6,6 +6,7 @@ export type Scenario =
   | "creds"
   | "creds-legacy"
   | "sso"
+  | "iis-sso"
   | "oauth"
   | "saml"
   | "bearer"
@@ -19,6 +20,7 @@ export const SCENARIOS: Scenario[] = [
   "creds",
   "creds-legacy",
   "sso",
+  "iis-sso",
   "oauth",
   "saml",
   "bearer",
@@ -87,6 +89,30 @@ export function principal(override?: { user: string; domain: string }) {
     userId: "demo",
     isAdministrator: true,
     isDelegatedAdmin: false,
+    editablePartition: false,
+    passwordExpirationDate: null,
+  };
+}
+
+/**
+ * Principal as returned behind IIS Integrated Windows Authentication: a Windows/Active-Directory
+ * identity (NT SID + `domain|user` long name), resolved from the ambient Windows token IIS injects.
+ * Shape mirrors a real IIS+SSO `principal?action=get` response (demo values, no real PII).
+ */
+export function windowsPrincipal() {
+  const sid = "S-1-5-21-1111111111-2222222222-3333333333-1001";
+  return {
+    id: sid,
+    id2: "demo.user@example.com",
+    email: "demo.user@example.com",
+    name: "demo.user",
+    longName: "adsinequa|demo.user",
+    fullName: "Demo User",
+    userId: `adsinequa|${sid}`,
+    description: "Windows SSO principal (IIS Integrated Windows Auth)",
+    isUser: true,
+    isAdministrator: true,
+    isDelegatedAdmin: true,
     editablePartition: false,
     passwordExpirationDate: null,
   };

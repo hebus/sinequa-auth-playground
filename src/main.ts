@@ -111,8 +111,26 @@ async function startScenario(def: ScenarioDef) {
   configureFor(def);
   await bootstrap(def);
 
+  if (def.iisSso) reportIisSsoSignals();
   if (def.impersonate && isAuthenticated()) {
     await runImpersonationDemo(def);
+  }
+}
+
+/**
+ * Real IIS Integrated Windows Authentication (per the captured HAR) is fully transparent: the
+ * Negotiate/Kerberos handshake is done by the browser + IIS *below* this layer (its only on-the-wire
+ * trace is `Persistent-Auth: true` on every response), the server issues **no** web-token cookie and
+ * **no** CSRF token. @sinequa/atomic therefore authenticates via the `principal` auto-auth probe
+ * (`tryAutoAuthentication` → `sso`), but stores no token. Surface the three signals so the token-less
+ * nature is explicit: `isAuthenticated()` is `!!getToken()`, so it stays `false` on stock atomic —
+ * it flips to `true` only with the proposed fix (persisted auth state). See README "IIS + Windows SSO".
+ */
+function reportIisSsoSignals() {
+  const authed = isAuthenticated();
+  log(`signals → login authMode=${JSON.stringify(globalConfig.authMode)} · isAuthenticated()=${authed}`, authed ? "ok" : "muted");
+  if (!authed) {
+    log("token-less ambient SSO: login()=true & authMode=sso, but isAuthenticated()=!!getToken() → false on stock atomic (fixed by persisted auth state)", "muted");
   }
 }
 
@@ -291,6 +309,7 @@ async function expireToken() {
     clearSessionTokens();
     configureFor(activeDef);
     await bootstrap(activeDef);
+    if (activeDef.iisSso) reportIisSsoSignals();
     if (activeDef.impersonate && isAuthenticated()) await runImpersonationDemo(activeDef);
   } else if (!reauth) {
     log("→ enable “Re-auth after expiry” to simulate the error-interceptor re-login", "muted");
