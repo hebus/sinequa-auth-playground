@@ -148,10 +148,17 @@ export function handleApi(req: ParsedReq): Result | null {
 
   // ---- Principal --------------------------------------------------------
   if (req.pathname === "/api/v1/principal") {
-    // IIS + Windows SSO: the Windows identity is injected by IIS on EVERY request, so the principal
-    // resolves with no cookie/token — regardless of noAutoAuthentication. This 200 is what makes
-    // atomic's tryAutoAuthentication succeed and settle on authMode `sso` (without storing a token).
+    // IIS + Windows SSO: the Windows identity is injected by IIS, but Sinequa only honours it when it
+    // is allowed to run its auth challenge. A request that suppresses it (noAutoAuthentication=true) —
+    // which stock atomic sends on fetchPrincipal and the write methods — is answered anonymously → 401.
+    // The transport-SSO fix (resolveNoAutoAuthentication) sends `false` in sso mode, so the auto-auth
+    // probe and fetchPrincipal both get 200. This is what makes atomic settle on `sso` (no token stored).
     if (scenario === "iis-sso") {
+      if (req.query.get("noAutoAuthentication") === "true") {
+        return json(401, {
+          errorMessage: "Not authenticated — noAutoAuthentication suppressed the Windows challenge",
+        });
+      }
       return { status: 200, json: windowsPrincipal() };
     }
     // Header-driven impersonation: when the admin sends sinequa-override-user, the server answers

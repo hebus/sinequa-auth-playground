@@ -117,6 +117,14 @@ returns `200`, so `login()` settles on `authMode: sso` (`authentication/session/
 > fix (persist an authenticated state, so `isAuthenticated()` is `!!getToken() || isAuthedFlag()`) makes
 > the pill flip to `true`; run the playground with `ATOMIC=src` against a patched checkout to validate it.
 
+> **Data requests need `noAutoAuthentication: false` in SSO mode.** Transport SSO is stateless (no
+> token), so a request that suppresses the server-side auth challenge — which stock atomic does by
+> hard-coding `noAutoAuthentication: true` on `fetchPrincipal` and the write methods — is answered
+> anonymously → `401`, even after login succeeded. The fix is a companion to the one above:
+> `resolveNoAutoAuthentication()` sends `false` in `sso` mode so the server runs the Windows challenge.
+> The scenario calls `fetchPrincipal()` after login to make this visible: it returns `200` with the fix,
+> `401` without it. The mock answers `principal?...&noAutoAuthentication=true` with `401` for `iis-sso`.
+
 > **Playground note.** The real SPNEGO handshake (browser ↔ IIS, Intranet zone, OS ticket) cannot be
 > reproduced against a `localhost` mock — and it doesn't appear at the app layer anyway. So the scenario
 > reproduces the **observable contract** from the HAR (transparent, cookie-less, `Persistent-Auth: true`,

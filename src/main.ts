@@ -111,7 +111,7 @@ async function startScenario(def: ScenarioDef) {
   configureFor(def);
   await bootstrap(def);
 
-  if (def.iisSso) reportIisSsoSignals();
+  if (def.iisSso) await reportIisSsoSignals();
   if (def.impersonate && isAuthenticated()) {
     await runImpersonationDemo(def);
   }
@@ -126,11 +126,20 @@ async function startScenario(def: ScenarioDef) {
  * nature is explicit: `isAuthenticated()` is `!!getToken()`, so it stays `false` on stock atomic —
  * it flips to `true` only with the proposed fix (persisted auth state). See README "IIS + Windows SSO".
  */
-function reportIisSsoSignals() {
+async function reportIisSsoSignals() {
   const authed = isAuthenticated();
-  log(`signals → login authMode=${JSON.stringify(globalConfig.authMode)} · isAuthenticated()=${authed}`, authed ? "ok" : "muted");
+  log(`signals → authMode=${JSON.stringify(globalConfig.authMode)} · isAuthenticated()=${authed}`, authed ? "ok" : "muted");
   if (!authed) {
     log("token-less ambient SSO: login()=true & authMode=sso, but isAuthenticated()=!!getToken() → false on stock atomic (fixed by persisted auth state)", "muted");
+  }
+  // Prove a real data call works. fetchPrincipal sends noAutoAuthentication; under transport SSO the
+  // server only honours the Windows identity when it isn't suppressed. The fix sends `false` in sso
+  // mode → 200; stock atomic sends `true` → the server answers anonymously → 401.
+  try {
+    const p = (await fetchPrincipal()) as { name: string };
+    log(`fetchPrincipal → 200 (name=${p.name}) — data requests authenticate under transport SSO`, "ok");
+  } catch (e) {
+    log(`fetchPrincipal → ${(e as Error).message} — stock atomic sends noAutoAuthentication=true → 401 (needs the transport-SSO fix)`, "err");
   }
 }
 
@@ -309,7 +318,7 @@ async function expireToken() {
     clearSessionTokens();
     configureFor(activeDef);
     await bootstrap(activeDef);
-    if (activeDef.iisSso) reportIisSsoSignals();
+    if (activeDef.iisSso) await reportIisSsoSignals();
     if (activeDef.impersonate && isAuthenticated()) await runImpersonationDemo(activeDef);
   } else if (!reauth) {
     log("→ enable “Re-auth after expiry” to simulate the error-interceptor re-login", "muted");
