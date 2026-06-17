@@ -76,6 +76,7 @@ function bearerChallengeFor(scenario: Scenario): string | undefined {
   return scenario === "creds" ||
     scenario === "creds-legacy" ||
     scenario === "bearer" ||
+    scenario === "spfx" ||
     scenario === "oidc-expired"
     ? BEARER_CHALLENGE
     : undefined;
@@ -112,6 +113,14 @@ export function handleApi(req: ParsedReq): Result | null {
       if (authed) {
         const token = tokenFor(req.cookies, req.csrfHeader)!;
         return { status: 200, json: { csrfToken: token }, refreshToken: token };
+      }
+      // SPFx host: the AadHttpClient attaches an Azure AD Bearer to every call. A valid
+      // Bearer at getCsrfToken authenticates the user and mints the CSRF token + session — mirrors
+      // Sinequa validating the AAD access token and bootstrapping the web-token session from it.
+      const bearer = req.authHeader?.toLowerCase().startsWith("bearer ");
+      if (scenario === "spfx" && bearer) {
+        const s = issueSession();
+        return { status: 200, json: { csrfToken: s.token }, setSession: s.id, refreshToken: s.token };
       }
       // suppressErrors=true semantics: 200 with no token when unauthenticated.
       return json(200, {});
@@ -250,6 +259,13 @@ export function handleControl(req: ParsedReq): Result | null {
     return { status: 302, redirectTo: ret, clearIdp: true, clearSession: true };
   }
 
+  // Fake Azure AD token endpoint — stands in for login.microsoftonline.com, which an SPFx web part's
+  // AadHttpClient / AadTokenProvider calls under the hood to mint the access token presented to Sinequa.
+  if (req.pathname === "/__mock/aad-token") {
+    const resource = req.query.get("resource") || "api://sinequa";
+    return json(200, aadToken(resource));
+  }
+
   if (req.pathname === "/__mock/expire") {
     const n = expireAll();
     return json(200, { expired: n });
@@ -260,6 +276,26 @@ export function handleControl(req: ParsedReq): Result | null {
   }
 
   return null;
+}
+
+/**
+ * OAuth2 token response with a JWT-shaped (unsigned, non-secret) access token whose claims name the
+ * Sinequa resource. Faithful enough to look like an Azure AD token in the activity log and to be
+ * posted to `security.webtoken`; the mock accepts any `Authorization: Bearer` and never validates it.
+ */
+function aadToken(resource: string) {
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const header = b64({ typ: "JWT", alg: "RS256", kid: "mock-aad-key" });
+  const payload = b64({
+    aud: resource,
+    iss: "https://sts.windows.net/00000000-0000-0000-0000-000000000000/",
+    appid: "spfx-webpart-client-id",
+    scp: "user_impersonation",
+    upn: "demo@contoso.onmicrosoft.com",
+    name: "Demo Admin",
+  });
+  const access_token = `${header}.${payload}.mock-signature`;
+  return { token_type: "Bearer", expires_in: 3600, ext_expires_in: 3600, resource, access_token };
 }
 
 /** Minimal "identity provider" sign-in page shown when there is no IdP session. */

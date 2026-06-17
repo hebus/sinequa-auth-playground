@@ -15,6 +15,11 @@ export type ScenarioDef = {
   legacyCredentials?: boolean;
   /** Set globalConfig.bearerToken before bootstrapping. */
   bearer?: boolean;
+  /**
+   * SharePoint Framework (SPFx) host: before bootstrapping, acquire an Azure AD access token the way
+   * a web part does (AadTokenProvider/AadHttpClient) and set it as globalConfig.bearerToken.
+   */
+  spfx?: boolean;
   /** After authenticating, run the header-driven user-override (impersonation) demo. */
   impersonate?: boolean;
   expectedMode: string;
@@ -56,6 +61,16 @@ export const SCENARIOS: ScenarioDef[] = [
     group: "Session",
     description: "globalConfig.bearerToken set → security.webtoken with Authorization: Bearer.",
     bearer: true,
+    expectedMode: "bearer",
+  },
+  {
+    app: "spfx",
+    label: "SPFx (AadHttpClient)",
+    icon: "🧩",
+    group: "Session",
+    description:
+      "SharePoint web part: AadTokenProvider.getToken() acquires an Azure AD token → set as bearerToken → security.webtoken (Bearer).",
+    spfx: true,
     expectedMode: "bearer",
   },
   {

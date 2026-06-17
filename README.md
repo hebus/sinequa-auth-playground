@@ -8,6 +8,9 @@ A standalone **Vite** project that exercises every `@sinequa/atomic` login mode 
   sibling `../atomic` checkout (Vite alias → `../atomic/src/index.ts`); editing the auth code there is
   then reflected on reload — so this doubles as a living test bench for `login()` /
   `tryAutoAuthentication()`. See [Choosing the atomic source](#choosing-the-atomic-source).
+- The **SPFx** scenario exercises the SharePoint Framework integration via the library's
+  `@sinequa/atomic/spfx` subpath (`initializeAadHttpClient`) — no separate build. See
+  [SharePoint Framework (SPFx) + `AadHttpClient`](#sharepoint-framework-spfx--aadhttpclient).
 - The mock backend (`mock/`) runs as a **Vite dev-server middleware**, so everything is served from
   one origin (`http://localhost:5173`). `credentials: "include"`, `Set-Cookie`, and redirects all
   work without CORS.
@@ -22,18 +25,23 @@ npm run dev
 
 ### Choosing the atomic source
 
+App code always imports `@sinequa/atomic` (and, for the SPFx scenario, its `@sinequa/atomic/spfx`
+subpath); the Vite alias decides what those resolve to.
+
 | Mode | How | Resolves `@sinequa/atomic` to |
 |---|---|---|
 | **npm package** (default) | `npm run dev` | the published `@sinequa/atomic` in `node_modules` (see `package.json`) |
 | **Live sources** | `ATOMIC=src npm run dev` | `../atomic/src/index.ts` (no build step; edits reflected on reload) |
 
-On Windows PowerShell, set the env var inline: `$env:ATOMIC='src'; npm run dev`.
+`ATOMIC=src` aliases the `/spfx` subpath to `../atomic/src/spfx/index.ts` too, so the SPFx scenario also
+runs against live sources. On Windows PowerShell, set the env var inline: `$env:ATOMIC='src'; npm run dev`.
 
-> Live-sources mode requires the `@sinequa/atomic` repo checked out at `../atomic` (i.e.
-> `c:\dev\atomic`). If it lives elsewhere, edit the path in `vite.config.ts`. The TypeScript
-> type-checker always uses the installed npm package's types (compatible with the sources).
+> Live-sources mode requires the `@sinequa/atomic` repo checked out at `../atomic` (i.e. `c:\dev\atomic`).
+> If it lives elsewhere, edit the paths in `vite.config.ts`. The SPFx scenario needs an installed
+> `@sinequa/atomic` that ships the `/spfx` export (≥ 2.0.4), or `ATOMIC=src`.
 
-Click a scenario on the left; the status panel shows the resolved `authMode`, the `login()` result and
+The **Library** row in the status panel shows the active source (npm vs sources, in its tooltip). Click a
+scenario on the left; the panel also shows the resolved `authMode`, the `login()` result and
 `isAuthenticated()`, and the log mirrors every network call.
 
 ## Scenarios
@@ -49,6 +57,7 @@ state. Pre-login pins it in a `mock-scenario` cookie for the param-less endpoint
 | **OAuth redirect** | Provider advertised → `security.oauth` → fake IdP sets a session → back → authenticated. |
 | **SAML redirect** | Same via `security.saml`. |
 | **Bearer token** | `bearerToken` set → `security.webtoken` with `Authorization: Bearer` → authenticated. |
+| **SPFx (AadHttpClient)** | SharePoint web part acquires an Azure AD token (`AadTokenProvider`/`AadHttpClient`) → set as `bearerToken` → `security.webtoken` with `Authorization: Bearer`. |
 | **OIDC auto-auth ✨** | No provider; `getCsrfToken` empty; the principal probe (no `noAutoAuthentication`) returns **200** → `tryAutoAuthentication` → `sso`. **Validates the new code.** |
 | **OIDC, no IdP session** | Probe returns **401** → deterministic fallback to the credentials form (no false positive). |
 | **OAuth loop guard** | Fake IdP returns **without** a session → the one-shot redirect loop guard throws instead of looping forever. |
@@ -72,6 +81,42 @@ out-of-band from atomic's token store, the **isAuthenticated** pill stays `false
 by the returned `csrfToken` and the `200` from `fetchPrincipal()` in the log. Bad/missing credentials
 return `401` with the same `WWW-Authenticate: Bearer realm="sinequa"` challenge as the other
 credential modes.
+
+### SharePoint Framework (SPFx) + `AadHttpClient`
+
+When the Sinequa UI is hosted as an **SPFx web part** inside SharePoint Online, there is no login
+form: the page already has a signed-in Azure AD user. The web part hands the framework's
+`AadHttpClient` (which transparently attaches an Azure AD token scoped to the **Sinequa-registered AAD
+application**) to the library via the `@sinequa/atomic/spfx` subpath, which then routes every request
+through it.
+
+```ts
+// inside the web part (real SPFx)
+import { initializeAadHttpClient } from "@sinequa/atomic/spfx";
+const client = await this.context.aadHttpClientFactory.getClient("api://sinequa-search/.default");
+initializeAadHttpClient(client); // atomic now routes its get/post through this client
+```
+
+The playground's **SPFx (AadHttpClient)** scenario injects a **mock `AadHttpClient`** (`src/spfx-aad.ts`)
+the same way, via `initializeAadHttpClient()` from `@sinequa/atomic/spfx`. The client pulls a token from
+the fake Azure AD endpoint (`/__mock/aad-token`, standing in for `login.microsoftonline.com`) and attaches
+`Authorization: Bearer` to every call. The Bearer rides along on `getCsrfToken`, which mints the web-token
+session (the mock authenticates a valid Bearer on the `spfx` scenario — mirroring Sinequa validating the
+AAD token and bootstrapping the session from it). The injected client is reset between scenarios so it
+never leaks into a non-SPFx run.
+
+The `WWW-Authenticate: Bearer realm="sinequa"` challenge applies on `401`s, same as the other
+Bearer/credential modes.
+
+> **AadHttpClient wiring.** The shared HTTP helpers (`get`/`post`/`put`/`patch`/`del`) are
+> AadHttpClient-aware: each consults a small `aadHttpClientManager` and, when a client has been injected
+> via `initializeAadHttpClient()`, routes the request through it (attaching the AAD token), falling back
+> to `fetch` otherwise. So **every** Sinequa call — `fetchAppPreLogin`, `getCsrfToken`, `fetchPrincipal`,
+> `fetchQuery`, … — carries the token, which is what a real cross-domain SharePoint host needs. The
+> manager and `initializeAadHttpClient` live in one shared chunk re-exported from `@sinequa/atomic/spfx`,
+> so the singleton the helpers consult is the very one the subpath exposes — there is a single HTTP
+> implementation, no duplicated spfx method files. With no client injected (the common case) the helpers
+> just use plain `fetch`, so the main entry's behaviour is unchanged.
 
 ### Provider logout & the fake IdP (OAuth / SAML)
 
@@ -110,7 +155,8 @@ The mock implements only what the auth/bootstrap flow touches:
 Response token plumbing matches atomic: success sets the `sinequa-web-token` cookie and returns the
 `sinequa-jwt-refresh` header (consumed by `handleResponse` → `setToken`).
 
-Control endpoints: `GET /__mock/idp` (fake IdP), `POST /__mock/expire`, `GET /__mock/state`.
+Control endpoints: `GET /__mock/idp` (fake IdP), `GET /__mock/aad-token` (fake Azure AD token endpoint
+for the SPFx scenario), `POST /__mock/expire`, `GET /__mock/state`.
 
 ## Auth-mode detection: config/probe vs `WWW-Authenticate`
 
@@ -174,7 +220,10 @@ right remediation (proxy re-negotiation or IdP redirect).
 ## Files
 
 ```
-vite.config.ts        # atomic resolution (npm default, ATOMIC=src for sources) + mock plugin
-index.html, src/      # the playground page + scenario logic
+vite.config.ts        # atomic source resolution (ATOMIC=src) incl. /spfx subpath + mock plugin
+index.html            # the playground page
+src/main.ts           # scenario logic
+src/spfx-aad.ts       # mock SPFx AadHttpClient + injection via @sinequa/atomic/spfx
+src/scenarios.ts      # scenario catalogue
 mock/                 # mock-plugin (middleware), handlers, sessions, fixtures
 ```

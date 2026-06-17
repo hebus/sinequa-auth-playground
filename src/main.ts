@@ -9,7 +9,11 @@ import {
   logout,
   setGlobalConfig,
 } from "@sinequa/atomic";
+import { initSpfxAadHttpClient, resetSpfxAadHttpClient } from "./spfx-aad";
 import { SCENARIOS, type ScenarioDef } from "./scenarios";
+
+// Injected by Vite `define` (see vite.config.ts): true when `@sinequa/atomic` is aliased to sources.
+declare const __ATOMIC_SRC__: boolean;
 
 // Loop guard key used internally by tryOAuthAuthentication/trySAMLAuthentication (not exported).
 const AUTH_REDIRECT_ATTEMPT_KEY = "sinequa-auth-redirect-attempt";
@@ -80,6 +84,9 @@ function configureFor(def: ScenarioDef) {
     userOverride: undefined,
     userOverrideActive: false,
   });
+  // Drop any AadHttpClient injected by a previous SPFx run; only the spfx scenario re-injects it
+  // (no-op until an SPFx run has loaded the subpath).
+  resetSpfxAadHttpClient();
 }
 
 let activeDef: ScenarioDef | null = null;
@@ -97,6 +104,9 @@ async function startScenario(def: ScenarioDef) {
   clearSessionTokens();
   sessionStorage.removeItem(AUTH_REDIRECT_ATTEMPT_KEY);
   sessionStorage.removeItem(RESUME_KEY);
+  // spfx tracks its OAuth/SAML redirect loop guard in localStorage instead.
+  localStorage.removeItem("oauthRedirectUrl");
+  localStorage.removeItem("samlRedirectUrl");
 
   configureFor(def);
   await bootstrap(def);
@@ -142,7 +152,30 @@ async function resumeScenario(def: ScenarioDef) {
   await bootstrap(def);
 }
 
+/**
+ * Models a Sinequa UI hosted as a SharePoint Framework (SPFx) web part: inside SharePoint the web part
+ * never sees a password — it acquires an Azure AD access token (via `AadTokenProvider`/`AadHttpClient`)
+ * scoped to the Sinequa-registered AAD application. We inject a mock `AadHttpClient` through
+ * `@sinequa/atomic/spfx` (`initializeAadHttpClient`); the library's HTTP helpers then route every
+ * request through it with `Authorization: Bearer`. The Bearer rides along on `getCsrfToken`, which mints
+ * the web-token session — the real SharePoint integration path.
+ */
+async function prepareSpfx(def: ScenarioDef): Promise<boolean> {
+  log("SPFx host: SharePoint web part acquires an Azure AD token for Sinequa", "section");
+  try {
+    await initSpfxAadHttpClient((m) => log(m, "ok"));
+    log("SPFx: initializeAadHttpClient(client) — requests now route through AadHttpClient (Bearer)", "ok");
+    return true;
+  } catch (e) {
+    log(`SPFx token acquisition failed: ${(e as Error).message}`, "err");
+    renderStatus(def, "AAD token error");
+    return false;
+  }
+}
+
 async function bootstrap(def: ScenarioDef) {
+  if (def.spfx && !(await prepareSpfx(def))) return;
+
   try {
     await initializeAppConfig();
     log(`initializeAppConfig → authMode = ${JSON.stringify(globalConfig.authMode)}`);
@@ -325,11 +358,16 @@ function toggleTheme() {
 // ---- Boot ------------------------------------------------------------------
 renderScenarios();
 refreshThemeIcon();
+const libSource = __ATOMIC_SRC__ ? "../atomic/src (sources)" : "npm package";
+$("s-lib").textContent = "@sinequa/atomic";
+$("s-lib").title = libSource;
 $("theme").addEventListener("click", toggleTheme);
 $("creds-form").addEventListener("submit", submitCredentials);
 $("expire").addEventListener("click", expireToken);
 $("logout").addEventListener("click", doLogout);
 $("clear").addEventListener("click", clearLog);
+
+log(`Library: @sinequa/atomic  ·  ${libSource}`, "muted");
 
 const resume = sessionStorage.getItem(RESUME_KEY);
 if (resume) {

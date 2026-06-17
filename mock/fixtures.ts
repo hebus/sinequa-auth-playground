@@ -9,6 +9,7 @@ export type Scenario =
   | "oauth"
   | "saml"
   | "bearer"
+  | "spfx"
   | "oidc"
   | "oidc-expired"
   | "oauth-loop"
@@ -21,6 +22,7 @@ export const SCENARIOS: Scenario[] = [
   "oauth",
   "saml",
   "bearer",
+  "spfx",
   "oidc",
   "oidc-expired",
   "oauth-loop",

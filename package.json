@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@sinequa/atomic": "^2.0.2"
+    "@sinequa/atomic": "^2.0.4"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
