@@ -14,6 +14,8 @@
 // (`initializeAadHttpClient`, `aadHttpClientManager`). Loaded lazily so non-SPFx runs never touch it.
 // Both the npm build and the sources re-export the manager from one shared chunk, so its singleton is
 // the very instance the shared HTTP helpers consult — the injected client really does route every call.
+import { apiUrl } from "./base";
+
 type SpfxApi = typeof import("@sinequa/atomic/spfx");
 
 let spfx: SpfxApi | null = null;
@@ -33,7 +35,7 @@ export function makeAadTokenProvider(log?: (msg: string) => void) {
   let cached: string | null = null;
   return async function getToken(): Promise<string> {
     if (cached) return cached;
-    const res = await fetch(`/__mock/aad-token?resource=${encodeURIComponent(SPFX_RESOURCE)}`);
+    const res = await fetch(apiUrl(`/__mock/aad-token?resource=${encodeURIComponent(SPFX_RESOURCE)}`));
     const { access_token, expires_in } = (await res.json()) as AadTokenResponse;
     cached = access_token;
     log?.(`SPFx: Azure AD token acquired (expires_in=${expires_in}s)`);

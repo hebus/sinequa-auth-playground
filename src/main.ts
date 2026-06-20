@@ -11,6 +11,7 @@ import {
 } from "@sinequa/atomic";
 import { initSpfxAadHttpClient, resetSpfxAadHttpClient } from "./spfx-aad";
 import { SCENARIOS, type ScenarioDef } from "./scenarios";
+import { BASE, apiUrl } from "./base";
 
 // Injected by Vite `define` (see vite.config.ts): true when `@sinequa/atomic` is aliased to sources.
 declare const __ATOMIC_SRC__: boolean;
@@ -57,6 +58,20 @@ window.fetch = async (input, init) => {
   }
 };
 
+// ---- Mock backend in production --------------------------------------------
+// In the GitHub Pages build the Node mock middleware is gone, so register the Service Worker that
+// serves the mock backend in-browser (mock/sw.ts) and wait until it controls the page BEFORE any
+// scenario fires a request. In dev this block is stripped (import.meta.env.PROD === false) — the Vite
+// middleware answers /api and /__mock, so local development is unchanged.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  try {
+    await navigator.serviceWorker.register(`${BASE}/sw.js`, { type: "module" });
+    await navigator.serviceWorker.ready;
+  } catch (e) {
+    log(`Service Worker registration failed: ${(e as Error).message}`, "err");
+  }
+}
+
 // ---- Status panel ----------------------------------------------------------
 function renderStatus(def: ScenarioDef | null, loginResult: string) {
   $("s-scenario").textContent = def ? `${def.label} · app="${def.app}"` : "—";
@@ -76,7 +91,9 @@ function showCreds(show: boolean) {
 // ---- Auth flow (logic unchanged) -------------------------------------------
 function configureFor(def: ScenarioDef) {
   setGlobalConfig({
-    backendUrl: "",
+    // Dev: "" → atomic falls back to window.location.origin (root) as before. Prod: the origin + base
+    // sub-path, so every atomic call lands inside the Service Worker scope (/sinequa-auth-playground/).
+    backendUrl: BASE ? location.origin + BASE : "",
     app: def.app,
     // Reset everything detection-related so a previous scenario never leaks in.
     // NOTE: must be a DEFINED value — setGlobalConfig ignores `authMode: undefined`, and
@@ -279,7 +296,7 @@ async function submitLegacyCredentials(username: string, password: string) {
     noAutoAuthentication: "true",
   });
   try {
-    const res = await realFetch(`/api/v1/webToken?${params}`, {
+    const res = await realFetch(apiUrl(`/api/v1/webToken?${params}`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -305,7 +322,7 @@ async function submitLegacyCredentials(username: string, password: string) {
 
 async function expireToken() {
   log("⏱️ expiring session", "section");
-  await realFetch("/__mock/expire", { method: "POST" });
+  await realFetch(apiUrl("/__mock/expire"), { method: "POST" });
   log("session expired server-side; calling fetchPrincipal()…");
   try {
     await fetchPrincipal();

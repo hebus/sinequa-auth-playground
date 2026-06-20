@@ -11,9 +11,10 @@ A standalone **Vite** project that exercises every `@sinequa/atomic` login mode 
 - The **SPFx** scenario exercises the SharePoint Framework integration via the library's
   `@sinequa/atomic/spfx` subpath (`initializeAadHttpClient`) — no separate build. See
   [SharePoint Framework (SPFx) + `AadHttpClient`](#sharepoint-framework-spfx--aadhttpclient).
-- The mock backend (`mock/`) runs as a **Vite dev-server middleware**, so everything is served from
-  one origin (`http://localhost:5173`). `credentials: "include"`, `Set-Cookie`, and redirects all
-  work without CORS.
+- The mock backend (`mock/`) runs as a **Vite dev-server middleware** in development, so everything is
+  served from one origin (`http://localhost:5173`). `credentials: "include"`, `Set-Cookie`, and
+  redirects all work without CORS. The **production build** runs the same handlers in a **Service
+  Worker** so the demo is fully playable on GitHub Pages — see [Live demo](#live-demo-github-pages).
 
 ## Run
 
@@ -43,6 +44,26 @@ runs against live sources. On Windows PowerShell, set the env var inline: `$env:
 The **Library** row in the status panel shows the active source (npm vs sources, in its tooltip). Click a
 scenario on the left; the panel also shows the resolved `authMode`, the `login()` result and
 `isAuthenticated()`, and the log mirrors every network call.
+
+## Live demo (GitHub Pages)
+
+The demo also runs **fully in the browser** — no server. On GitHub Pages the Node dev middleware is
+gone, so the *same* mock handlers (`mock/handlers.ts`) run inside a **Service Worker** (`mock/sw.ts`)
+that intercepts `/api/*` and `/__mock/*` (fetches **and** the OAuth/SAML top-level navigations). It is
+registered only in the production build; `npm run dev` is unchanged (still the Vite middleware).
+
+```bash
+npm run build     # → dist/ (app + sw.js), base = /sinequa-auth-playground/
+npm run preview   # serve dist/ locally under that base path
+```
+
+Pushing to `main` builds and deploys via `.github/workflows/deploy.yml`. **One-time setup:** in the
+repo, *Settings → Pages → Build and deployment → Source = "GitHub Actions"*. The site then lives at
+`https://hebus.github.io/sinequa-auth-playground/`.
+
+> The Pages build uses the **published npm `@sinequa/atomic`** (no `../atomic` sources). The `iis-sso`
+> scenario therefore shows the *stock* behaviour — `fetchPrincipal` → 401 (token-less ambient SSO) —
+> since the transport-SSO fix only exists in the live sources. Every other scenario authenticates.
 
 ## Scenarios
 
@@ -271,10 +292,12 @@ right remediation (proxy re-negotiation or IdP redirect).
 ## Files
 
 ```
-vite.config.ts        # atomic source resolution (ATOMIC=src) incl. /spfx subpath + mock plugin
+vite.config.ts        # atomic source resolution (ATOMIC=src) incl. /spfx subpath + mock plugin + Pages base/sw build
 index.html            # the playground page
-src/main.ts           # scenario logic
+src/main.ts           # scenario logic (registers the SW in the production build)
 src/spfx-aad.ts       # mock SPFx AadHttpClient + injection via @sinequa/atomic/spfx
 src/scenarios.ts      # scenario catalogue
-mock/                 # mock-plugin (middleware), handlers, sessions, fixtures
+src/base.ts           # base-path helpers for the client (apiUrl)
+mock/                 # handlers, sessions, fixtures (shared) + mock-plugin (dev middleware) + sw (prod Service Worker) + base
+.github/workflows/    # deploy.yml — build + publish to GitHub Pages
 ```

@@ -53,6 +53,7 @@ import {
   issueIdpSession,
   SCENARIO_COOKIE,
 } from "./sessions";
+import { withBase } from "./base";
 
 function resolveScenario(req: ParsedReq): Scenario {
   const fromQuery = req.query.get("app");
@@ -139,7 +140,7 @@ export function handleApi(req: ParsedReq): Result | null {
       // the IdP logout endpoint so the consumer terminates the IdP session. Ambient modes (sso/oidc)
       // and credentials/bearer return NO logoutUrl (the consumer handles the post-logout UX itself).
       const provider = scenario === "oauth" || scenario === "saml" || scenario === "oauth-loop";
-      const logoutUrl = provider ? "/__mock/idp-logout?return=/" : "";
+      const logoutUrl = provider ? withBase("/__mock/idp-logout?return=/") : "";
       return { status: 200, json: { methodresult: "ok", logoutUrl }, clearSession: true };
     }
 
@@ -228,7 +229,9 @@ export function handleApi(req: ParsedReq): Result | null {
       typeof req.body.originalUrl === "string" ? (req.body.originalUrl as string) : "/";
     // `oauth-loop` points at an IdP that never sets a session, to exercise the redirect loop guard.
     const noauth = scenario === "oauth-loop" ? "&noauth=1" : "";
-    const redirectUrl = `/__mock/idp?return=${encodeURIComponent(originalUrl)}&app=${scenario}${noauth}`;
+    const redirectUrl = withBase(
+      `/__mock/idp?return=${encodeURIComponent(originalUrl)}&app=${scenario}${noauth}`,
+    );
     return { ...json(200, { redirectUrl }), setScenario: scenario };
   }
 
@@ -251,7 +254,7 @@ export function handleControl(req: ParsedReq): Result | null {
 
     if (noauth) {
       // Provider "authenticated" without establishing a session → triggers the app loop guard.
-      return { status: 302, redirectTo: ret, setScenario: appName };
+      return { status: 302, redirectTo: withBase(ret), setScenario: appName };
     }
 
     // Silent SSO when an IdP session already exists; an explicit IdP sign-in establishes one.
@@ -259,7 +262,7 @@ export function handleControl(req: ParsedReq): Result | null {
       const s = issueSession();
       return {
         status: 302,
-        redirectTo: ret,
+        redirectTo: withBase(ret),
         setSession: s.id,
         refreshToken: s.token,
         setScenario: appName,
@@ -276,7 +279,7 @@ export function handleControl(req: ParsedReq): Result | null {
     const ret = req.query.get("return") || "/";
     dropIdpSession(req.cookies);
     dropSession(req.cookies);
-    return { status: 302, redirectTo: ret, clearIdp: true, clearSession: true };
+    return { status: 302, redirectTo: withBase(ret), clearIdp: true, clearSession: true };
   }
 
   // Fake Azure AD token endpoint — stands in for login.microsoftonline.com, which an SPFx web part's
@@ -304,7 +307,14 @@ export function handleControl(req: ParsedReq): Result | null {
  * posted to `security.webtoken`; the mock accepts any `Authorization: Bearer` and never validates it.
  */
 function aadToken(resource: string) {
-  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  // base64url of a UTF-8 JSON payload, isomorphic across Node and the browser/Service Worker
+  // (no Buffer): TextEncoder → binary string → btoa → URL-safe.
+  const b64 = (o: unknown) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(o));
+    let bin = "";
+    for (const byte of bytes) bin += String.fromCharCode(byte);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
   const header = b64({ typ: "JWT", alg: "RS256", kid: "mock-aad-key" });
   const payload = b64({
     aud: resource,
@@ -320,7 +330,9 @@ function aadToken(resource: string) {
 
 /** Minimal "identity provider" sign-in page shown when there is no IdP session. */
 function idpLoginPage(ret: string, app: string): string {
-  const href = `/__mock/idp?return=${encodeURIComponent(ret)}&app=${encodeURIComponent(app)}&idp_login=1`;
+  const href = withBase(
+    `/__mock/idp?return=${encodeURIComponent(ret)}&app=${encodeURIComponent(app)}&idp_login=1`,
+  );
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
