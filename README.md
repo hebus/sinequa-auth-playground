@@ -3,6 +3,10 @@
 A standalone **Vite** project that exercises every `@sinequa/atomic` login mode against an
 **in-process mock Sinequa backend** — no real server, no CORS, no cookies headache.
 
+[**▶ Live demo**](https://hebus.github.io/sinequa-auth-playground/) — every login mode, running entirely in your browser.
+
+![Sinequa Auth Playground — an animated constellation of the auth scenarios around the mock backend](docs/demo.gif)
+
 - The harness page (`src/main.ts`) resolves `@sinequa/atomic` from the **published npm package** by
   default. Set `ATOMIC=src` to instead alias it to the **live `@sinequa/atomic` sources** from the
   sibling `../atomic` checkout (Vite alias → `../atomic/src/index.ts`); editing the auth code there is
