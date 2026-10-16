@@ -1,7 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
-import { handleApi, handleControl, type ParsedReq, type Result } from "./handlers";
-import { SESSION_COOKIE, SCENARIO_COOKIE, IDP_COOKIE } from "./sessions";
+import { handleApi, handleControl, resolveScenario, type ParsedReq, type Result } from "./handlers";
+import {
+  HTTP_SESSION_COOKIE,
+  IDP_COOKIE,
+  SCENARIO_COOKIE,
+  SESSION_COOKIE,
+  sessionCookieExpires,
+  sessionCookieName,
+  sessionCookieValue,
+} from "./sessions";
 
 function parseCookies(header?: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -35,13 +43,33 @@ function header(req: IncomingMessage, name: string): string | null {
   return Array.isArray(v) ? (v[0] ?? null) : (v ?? null);
 }
 
-function applyResult(res: ServerResponse, result: Result): void {
+/**
+ * Whether the browser reached the mock over HTTPS: directly, or through a TLS-terminating dev proxy
+ * that says so (`x-forwarded-proto`, e.g. http-proxy's `xfwd: true`). The real server names and
+ * attributes its session cookie by that scheme.
+ */
+function viaHttps(req: IncomingMessage): boolean {
+  return header(req, "x-forwarded-proto") === "https" || Boolean((req.socket as { encrypted?: boolean }).encrypted);
+}
+
+function applyResult(res: ServerResponse, result: Result, secure: boolean): void {
   const cookies: string[] = [];
   if (result.setSession) {
-    cookies.push(`${SESSION_COOKIE}=${result.setSession}; Path=/; SameSite=Lax`);
+    // As observed on real backends: a JWT value, HttpOnly (no page script ever reads it), `Expires` equal to
+    // the token's epoch. HTTPS: `sinequa-web-token-secure` + `Secure`. HTTP: `sinequa-web-token`, neither
+    // `Secure` nor `SameSite`. (The real server sets it twice; once is enough for a browser.)
+    const expires = sessionCookieExpires(result.setSession);
+    const value = sessionCookieValue(result.setSession);
+    cookies.push(
+      secure
+        ? `${sessionCookieName(true)}=${value}; Expires=${expires}; Path=/; HttpOnly; Secure`
+        : `${sessionCookieName(false)}=${value}; Expires=${expires}; Path=/; HttpOnly`,
+    );
   }
   if (result.clearSession) {
-    cookies.push(`${SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`);
+    // either name, whichever scheme the cookie was set under
+    cookies.push(`${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure`);
+    cookies.push(`${HTTP_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly`);
   }
   if (result.setScenario) {
     cookies.push(`${SCENARIO_COOKIE}=${result.setScenario}; Path=/; SameSite=Lax`);
@@ -121,7 +149,7 @@ export function sinequaMock(): Plugin {
         // IIS Integrated Windows Auth signs every response with `Persistent-Auth: true` (RFC 4559) —
         // the only on-the-wire trace of the transparent Negotiate/Kerberos handshake. Mirror it for
         // the iis-sso scenario (resolved from the `app` query param or the pinned scenario cookie).
-        if ((url.searchParams.get("app") || parsed.cookies[SCENARIO_COOKIE]) === "iis-sso") {
+        if (resolveScenario(parsed) === "iis-sso") {
           res.setHeader("Persistent-Auth", "true");
         }
 
@@ -137,7 +165,7 @@ export function sinequaMock(): Plugin {
 
         // eslint-disable-next-line no-console
         console.log(`[mock] ${parsed.method} ${url.pathname}${url.search} → ${result.status}`);
-        applyResult(res, result);
+        applyResult(res, result, viaHttps(req));
       });
     },
   };

@@ -97,7 +97,7 @@ state. Pre-login pins it in a `mock-scenario` cookie for the param-less endpoint
 ```http
 POST api/v1/webToken?noUserOverride=true&noAutoAuthentication=true
 { "action": "get", "user": "...", "password": "...", "tokenInCookie": true }
-→ 200 { "csrfToken": "..." }   + Set-Cookie: sinequa-web-token=…
+→ 200 { "csrfToken": "..." }   + Set-Cookie: sinequa-web-token-secure=…
 ```
 
 `@sinequa/atomic`'s `login()` does **not** use this path (it always posts to `security.webtoken`), so
@@ -225,11 +225,61 @@ The mock implements only what the auth/bootstrap flow touches:
 | GET | `api/v1/principal?action=get` | **probe** (auto-auth allowed) vs `fetchPrincipal` (`noAutoAuthentication=true`) |
 | GET | `api/v1/usersettings` | app init (stub) |
 
-Response token plumbing matches atomic: success sets the `sinequa-web-token` cookie and returns the
+Response token plumbing matches atomic: success sets the `sinequa-web-token-secure` cookie and returns the
 `sinequa-jwt-refresh` header (consumed by `handleResponse` → `setToken`).
 
+### Session lifetime and token shape
+
+Sessions have a **lifetime**, like the real server's, so an application's expiry handling can be exercised
+against the mock (`mock/sessions.ts`). Three things are configurable independently, because the two real
+backends observed behave differently:
+
+| | `local` preset (default) | `oauth-demo` preset |
+|---|---|---|
+| Observed on | a local Sinequa, credentials login — measured over 33 min | an OAuth demo backend |
+| Lifetime | **30 min** | ~168 h |
+| Expiry | **absolute**: fixed at sign-in. An active session still dies at 30 min | **sliding**: each authenticated call pushes it to `now + TTL` |
+| `sinequa-jwt-refresh` | **never** (not even at sign-in; no new `Set-Cookie` either) | on **every** authenticated response |
+
+- **Token.** `<43 base64url chars>|<expiry, epoch seconds>` — in the `challenge` / login **bodies**, and in the
+  `sinequa-jwt-refresh` header when the refresh policy sends one. Observed on both backends. The suffix is the only
+  expiry date a browser can read, since the session cookie is `HttpOnly`.
+- **Cookie.** A JWT-shaped value `{ iss, iat, sid, exp, sub }` with a placeholder signature, `HttpOnly`, `Expires` equal
+  to the token's epoch. Named like the real server does by scheme: over **HTTPS** `sinequa-web-token-secure` with
+  `Secure`; over plain **HTTP** `sinequa-web-token`, with neither `Secure` nor `SameSite`. The mock tells the scheme
+  from `x-forwarded-proto` (use `xfwd: true` in a TLS-terminating dev proxy) or a TLS socket. The real server sets the
+  cookie twice; once is enough for a browser. Its value is not renewed after sign-in, even with a sliding expiry.
+- **A session left idle past its lifetime expires on its own**: the next call answers `401`.
+- **Auth gating.** `usersettings` answers `401` without a session (except `iis-sso`, whose identity is ambient),
+  which is how an application finds out its session lapsed. Other endpoints are not mocked: stay on the home page.
+
+`GET /__mock/ttl` changes this so a client can be tested in seconds, or against a backend that behaves differently.
+Parameters combine and are applied in this order, so `preset=oauth-demo&seconds=45` is the OAuth backend with a 45 s life:
+
+| Query | Effect |
+|---|---|
+| `reset=1` | back to the defaults (the `local` preset) |
+| `preset=local` / `preset=oauth-demo` | one of the two observed backends (table above) |
+| `seconds=120` | session lifetime; applies to sessions issued afterwards |
+| `expiry=sliding` / `expiry=absolute` | whether activity moves the expiry |
+| `refresh=never` / `always` / `below:300` | when `sinequa-jwt-refresh` is sent (`below:N`: under N seconds left) |
+| `suffix=off` | tokens **without** the `\|<epoch>` suffix (a backend sending bare tokens) |
+| `body=bare` | bare token in login/challenge **bodies**, dated one in the header |
+
+Some combinations exist to expose a client's blind spots, not because a backend was seen doing them. In particular
+`expiry=sliding&refresh=never` is a server that extends active sessions without telling the client: a client that
+warns from the token's date will warn an active user for nothing, and has no way to know.
+
+> **What this encodes.** Only what was observed. The `below:N` threshold, the 168 h lifetime's origin, and whether
+> the `security.webtoken` body carries the suffix on every backend are **assumptions or single observations**
+> (the body variant is switchable for that reason). The mock validates an application's wiring, timing and
+> de-duplication — it does not prove what every real backend sends.
+
+The scenario is the first of `?app=`, the request body's `app` and the `mock-scenario` cookie that **is** a
+scenario name, so an application with its own `app` name (e.g. Mint's `mint_rnd`) selects one with the cookie.
+
 Control endpoints: `GET /__mock/idp` (fake IdP), `GET /__mock/aad-token` (fake Azure AD token endpoint
-for the SPFx scenario), `POST /__mock/expire`, `GET /__mock/state`.
+for the SPFx scenario), `POST /__mock/expire`, `GET /__mock/ttl` (see above), `GET /__mock/state`.
 
 The **IIS + Windows SSO** scenario adds no control endpoint: it's plain `api/v1/*` responses plus a
 `Persistent-Auth: true` header (the IIS/Windows-auth marker) and a Windows-identity `principal`.

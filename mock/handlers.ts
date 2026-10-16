@@ -12,10 +12,18 @@ import {
   windowsPrincipal,
 } from "./fixtures";
 import {
+  bodyToken,
   dropSession,
   expireAll,
+  getMockConfig,
   isAuthed,
   issueSession,
+  parseRefreshPolicy,
+  PRESETS,
+  renewSession,
+  resetMockConfig,
+  setMockConfig,
+  shouldRefresh,
   tokenFor,
   debugState,
 } from "./sessions";
@@ -55,12 +63,15 @@ import {
 } from "./sessions";
 import { withBase } from "./base";
 
-function resolveScenario(req: ParsedReq): Scenario {
-  const fromQuery = req.query.get("app");
+/**
+ * The scenario is named by the `app` of the request, or pinned by the `mock-scenario` cookie.
+ * The first candidate that IS a scenario wins: a real application sends its own `app` name
+ * (e.g. Mint's `mint_rnd`), which names no scenario and must not shadow the cookie that does.
+ */
+export function resolveScenario(req: Pick<ParsedReq, "query" | "body" | "cookies">): Scenario {
   const fromBody = typeof req.body.app === "string" ? (req.body.app as string) : undefined;
-  const fromCookie = req.cookies[SCENARIO_COOKIE];
-  const candidate = fromQuery || fromBody || fromCookie || "creds";
-  return isScenario(candidate) ? candidate : "creds";
+  const candidates = [req.query.get("app"), fromBody, req.cookies[SCENARIO_COOKIE]];
+  return candidates.find((c): c is Scenario => !!c && isScenario(c)) ?? "creds";
 }
 
 function json(status: number, body: unknown): Result {
@@ -84,8 +95,41 @@ function bearerChallengeFor(scenario: Scenario): string | undefined {
     : undefined;
 }
 
-/** Handle `/api/v1/*`. Returns null for unknown endpoints. */
+/**
+ * Handle `/api/v1/*`. Returns null for unknown endpoints.
+ *
+ * Two session behaviours differ between the real backends observed, so they are applied here, once,
+ * from the configuration rather than in each endpoint (see `PRESETS` in sessions.ts):
+ *  - the expiry either slides on each authenticated request or is fixed at sign-in (`renewSession`);
+ *  - the server either tells the client its token (`sinequa-jwt-refresh`) on every response, only near
+ *    the expiry, or never (`shouldRefresh`). The header an endpoint sets by itself, at sign-in, obeys
+ *    the same policy: a backend that never refreshes does not send one at login either (observed).
+ */
 export function handleApi(req: ParsedReq): Result | null {
+  const wasAuthed = isAuthed(req.cookies, req.csrfHeader);
+  if (wasAuthed) renewSession(req.cookies, req.csrfHeader);
+
+  const result = route(req);
+  if (!result) return result;
+
+  if (result.refreshToken && !wasAuthed) {
+    // a sign-in: the session did not exist when the request came in, so the policy cannot read it from the
+    // cookies. A fresh session has its whole lifetime left, which is "below the threshold" only if the lifetime is.
+    const { refresh, ttlMs } = getMockConfig();
+    const emit = refresh.kind === "always" || (refresh.kind === "below" && ttlMs < refresh.belowMs);
+    if (!emit) delete result.refreshToken;
+  } else if (wasAuthed && !result.clearSession && !result.redirectTo && result.status < 400) {
+    if (shouldRefresh(req.cookies, req.csrfHeader)) {
+      const token = tokenFor(req.cookies, req.csrfHeader);
+      if (token) result.refreshToken = token;
+    } else {
+      delete result.refreshToken;
+    }
+  }
+  return result;
+}
+
+function route(req: ParsedReq): Result | null {
   const scenario = resolveScenario(req);
   const authed = isAuthed(req.cookies, req.csrfHeader);
 
@@ -108,13 +152,13 @@ export function handleApi(req: ParsedReq): Result | null {
       // a token is always available, no prior login.
       if (scenario === "sso" || scenario === "impersonation") {
         const s = issueSession();
-        return { status: 200, json: { csrfToken: s.token }, setSession: s.id, refreshToken: s.token };
+        return { status: 200, json: { csrfToken: bodyToken(s.token) }, setSession: s.id, refreshToken: s.token };
       }
       // Authenticated (e.g. returning from the OAuth/SAML IdP, or after the OIDC probe):
       // hand back the live token.
       if (authed) {
         const token = tokenFor(req.cookies, req.csrfHeader)!;
-        return { status: 200, json: { csrfToken: token }, refreshToken: token };
+        return { status: 200, json: { csrfToken: bodyToken(token) }, refreshToken: token };
       }
       // SPFx host: the AadHttpClient attaches an Azure AD Bearer to every call. A valid
       // Bearer at getCsrfToken authenticates the user and mints the CSRF token + session — mirrors
@@ -122,7 +166,7 @@ export function handleApi(req: ParsedReq): Result | null {
       const bearer = req.authHeader?.toLowerCase().startsWith("bearer ");
       if (scenario === "spfx" && bearer) {
         const s = issueSession();
-        return { status: 200, json: { csrfToken: s.token }, setSession: s.id, refreshToken: s.token };
+        return { status: 200, json: { csrfToken: bodyToken(s.token) }, setSession: s.id, refreshToken: s.token };
       }
       // IIS + Windows SSO: the user is authenticated by IIS (ambient Windows identity), but Sinequa
       // mints NO web-token cookie and NO CSRF token. Faithful to the real HAR, getCsrfToken answers
@@ -192,7 +236,7 @@ export function handleApi(req: ParsedReq): Result | null {
       const s = issueSession();
       return {
         status: 200,
-        json: { methodResult: "ok", csrfToken: s.token },
+        json: { methodResult: "ok", csrfToken: bodyToken(s.token) },
         setSession: s.id,
         refreshToken: s.token,
         setScenario: scenario,
@@ -214,7 +258,7 @@ export function handleApi(req: ParsedReq): Result | null {
       // tokenInCookie:true → also drop the session cookie (handled via setSession below).
       return {
         status: 200,
-        json: { csrfToken: s.token },
+        json: { csrfToken: bodyToken(s.token) },
         setSession: s.id,
         refreshToken: s.token,
         setScenario: scenario,
@@ -237,6 +281,11 @@ export function handleApi(req: ParsedReq): Result | null {
 
   // ---- User settings (app init) -----------------------------------------
   if (req.pathname === "/api/v1/usersettings") {
+    // A real server answers 401 without a session — which is how an application finds out its session
+    // lapsed. `iis-sso` is the exception: identity is ambient (no cookie, no token), so there is nothing to check.
+    if (!authed && scenario !== "iis-sso") {
+      return { ...json(401, { errorMessage: "Not authenticated" }), wwwAuthenticate: bearerChallengeFor(scenario) };
+    }
     return json(200, userSettings());
   }
 
@@ -292,6 +341,31 @@ export function handleControl(req: ParsedReq): Result | null {
   if (req.pathname === "/__mock/expire") {
     const n = expireAll();
     return json(200, { expired: n });
+  }
+
+  // Session lifetime, expiry mode, refresh policy and token shape, so a client's expiry handling can be
+  // exercised in seconds and against backends that behave differently. Parameters combine, applied in this order
+  // (so `preset=oauth-demo&seconds=45` is the OAuth backend with a 45 s lifetime):
+  //   /__mock/ttl?reset=1              back to the defaults (the `local` preset)
+  //   /__mock/ttl?preset=local         30 min, absolute, no refresh header — a local credentials backend (default)
+  //   /__mock/ttl?preset=oauth-demo    168 h, sliding, refresh header on every response — an OAuth demo backend
+  //   /__mock/ttl?seconds=120          session lifetime; applies to sessions issued afterwards
+  //   /__mock/ttl?expiry=sliding|absolute
+  //   /__mock/ttl?refresh=never|always|below:300   when `sinequa-jwt-refresh` is sent (below:N = under N seconds left)
+  //   /__mock/ttl?suffix=off           tokens without the `|<epoch>` suffix (a bare-token backend)
+  //   /__mock/ttl?body=bare            bare token in login/challenge BODIES, dated one in the header
+  if (req.pathname === "/__mock/ttl") {
+    if (req.query.get("reset") === "1") resetMockConfig();
+    const preset = PRESETS[req.query.get("preset") ?? ""];
+    if (preset) setMockConfig(preset);
+    const seconds = Number(req.query.get("seconds"));
+    if (req.query.has("seconds") && Number.isFinite(seconds) && seconds > 0) setMockConfig({ ttlMs: seconds * 1000 });
+    if (req.query.has("expiry")) setMockConfig({ sliding: req.query.get("expiry") === "sliding" });
+    const refresh = parseRefreshPolicy(req.query.get("refresh") ?? "");
+    if (refresh) setMockConfig({ refresh });
+    if (req.query.has("suffix")) setMockConfig({ suffix: req.query.get("suffix") !== "off" });
+    if (req.query.has("body")) setMockConfig({ bodyBare: req.query.get("body") === "bare" });
+    return json(200, getMockConfig());
   }
 
   if (req.pathname === "/__mock/state") {

@@ -286,7 +286,7 @@ async function submitCredentials(ev: Event) {
  * Legacy credentials flow: atomic's `login()` only knows `security.webtoken`, so for `creds-legacy`
  * we POST straight to the old `api/v1/webToken` endpoint — mirroring the external client that still
  * uses it ({ action:"get", user, password, tokenInCookie:true } → { csrfToken }). The server sets the
- * `sinequa-web-token` cookie, so we then prove the session works via `fetchPrincipal()`.
+ * `sinequa-web-token-secure` cookie, so we then prove the session works via `fetchPrincipal()`.
  */
 async function submitLegacyCredentials(username: string, password: string) {
   log(`legacy webToken POST { action:"get", user:"${username}", password:"***", tokenInCookie:true }`, "section");

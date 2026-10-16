@@ -9,8 +9,8 @@
 // It is registered ONLY in the production build (see src/main.ts); `npm run dev` keeps using the Vite
 // middleware, so local development is unchanged.
 
-import { handleApi, handleControl, type ParsedReq, type Result } from "./handlers";
-import { SESSION_COOKIE, SCENARIO_COOKIE, IDP_COOKIE } from "./sessions";
+import { handleApi, handleControl, resolveScenario, type ParsedReq, type Result } from "./handlers";
+import { SESSION_COOKIE, HTTP_SESSION_COOKIE, SCENARIO_COOKIE, IDP_COOKIE, sessionCookieValue } from "./sessions";
 import { setMockBase, getMockBase } from "./base";
 
 // Cast the worker global once (the project's tsconfig uses the DOM lib; the `webworker` reference above
@@ -45,8 +45,11 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
 
 /** Mirror applyResult() from mock-plugin.ts onto the virtual cookie store. */
 function applyCookies(result: Result): void {
-  if (result.setSession) cookies[SESSION_COOKIE] = result.setSession;
-  if (result.clearSession) delete cookies[SESSION_COOKIE];
+  if (result.setSession) cookies[SESSION_COOKIE] = sessionCookieValue(result.setSession);
+  if (result.clearSession) {
+    delete cookies[SESSION_COOKIE];
+    delete cookies[HTTP_SESSION_COOKIE];
+  }
   if (result.setScenario) cookies[SCENARIO_COOKIE] = result.setScenario;
   if (result.setIdp) cookies[IDP_COOKIE] = result.setIdp;
   if (result.clearIdp) delete cookies[IDP_COOKIE];
@@ -87,8 +90,7 @@ async function handle(request: Request, pathname: string, query: URLSearchParams
 
   // IIS + Windows SSO signs every response with `Persistent-Auth: true` (RFC 4559) — mirror it for the
   // iis-sso scenario, as the dev middleware does.
-  const persistentAuth =
-    (query.get("app") || parsed.cookies[SCENARIO_COOKIE]) === "iis-sso";
+  const persistentAuth = resolveScenario(parsed) === "iis-sso";
 
   const result = pathname.startsWith("/__mock/") ? handleControl(parsed) : handleApi(parsed);
 
